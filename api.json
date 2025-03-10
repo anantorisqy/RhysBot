@@ -1,3 +1,9 @@
 {
-    "waifu": "https://api.waifu.pics/sfw/waifu"
+    "yt": "https://api.lolhuman.xyz/api/ytaudio2?apikey=risqyananto&url=",
+    "fb": "https://api.lolhuman.xyz/api/facebook?apikey=risqyananto&url=",
+    "tt": "https://api.lolhuman.xyz/api/tiktok?apikey=risqyananto&url=",
+    "cuaca": "https://api.lolhuman.xyz/api/cuaca/",
+    "wikped": "https://api.lolhuman.xyz/api/wiki?apikey=risqyananto&query=",
+    "donimex": "",
+    "animeinfo": "https://api.lolhuman.xyz/api/anime?apikey=risqyananto&query="
 }
