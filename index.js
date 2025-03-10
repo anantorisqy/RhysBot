@@ -1,407 +1,546 @@
 const { Telegraf, Markup, session } = require('telegraf');
-const { google } = require('googleapis');
+const msgHandler = require('./handler');
 const func = require('./function');
-const apiku = require('./api.json')
+const bad = require('./bad');
+const config = require('./config')
+const apiList = require('./api.json')
+const axios = require('axios')
 // === Konfigurasi Bot Telegram ===
 const bot = new Telegraf('7783365165:AAH3ASxL-stQ_0I33JaRX6mR9KlGSGxlIIM'); // Ganti dengan token bot Anda
 
-
 bot.use(session());
 bot.use((ctx, next) => {
+    // Waiting For 
     if (!ctx.session) ctx.session = { history: [], waitingForWarn: false, waitingForChannelId: false, waitingForGroupId: false, waitingFor: null, previousMenu: null};
-    return next();
-});
-
-function saveHistory(ctx, menu) {
-    ctx.session.history.push(menu);
-}
-
-// === Konfigurasi Google Sheets API ===
-const auth = new google.auth.GoogleAuth({
-    keyFile: 'credentials.json',
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-});
-
-const sheets = google.sheets({ version: 'v4', auth });
-const SPREADSHEET_ID = '1Qmp-QKdT55Dn13pX1Oixuib-ATW2idVXg1BosCmolmM'; // Ganti dengan ID Spreadsheet Anda
-
-// === Fungsi Cek Admin ===
-async function isAdmin(userId) {
-    try {
-        const res = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Admins!A:A'
-        });
-        const adminIds = res.data.values ? res.data.values.flat() : [];
-        return adminIds.includes(userId.toString());
-    } catch (error) {
-        console.error('Gagal memeriksa admin:', error);
-        return false;
-    }
-}
-// === Fungsi Cek Member ===
-async function isMember(userId) {
-    try {
-        const res = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Members!A:A'
-        });
-        const memberIds = res.data.values ? res.data.values.flat() : [];
-        return memberIds.includes(userId.toString());
-    } catch (error) {
-        console.error('Gagal memeriksa member:', error);
-        return false;
-    }
-}
-function handleBack(ctx) {
-    ctx.session.history.pop(); // Hapus menu saat ini
-    const previousMenu = ctx.session.history.pop(); // Ambil menu sebelumnya
-
-    if (previousMenu) {
-        bot.commands[previousMenu]?.(ctx); // Jalankan ulang command sebelumnya
-    } else {
-        ctx.reply('🔙 Anda sudah berada di menu utama.');
-    }
-}
-
-// === Fungsi untuk Mengambil Daftar Member dari Google Sheets ===
-async function getAllMembers() {
-    try {
-        const res = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Members!A:A', // Mengambil semua User ID
-        });
-        return res.data.values ? res.data.values.flat() : [];
-    } catch (error) {
-        console.error('Gagal mengambil data member:', error);
-        return [];
-    }
-}
-async function getAllChannels() {
-    try {
-        const res = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Channels!A:A',
-        });
-        return res.data.values ? res.data.values.flat() : [];
-    } catch (error) {
-        console.error('Gagal mengambil data channel:', error);
-        return [];
-    }
-}
-async function saveIDToSheet(sheetName, id) {
-    try {
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID,
-            range: `${sheetName}!A:A`,
-            valueInputOption: 'RAW',
-            resource: {
-                values: [[id]]
-            }
-        });
-        return true;
-    } catch (error) {
-        console.error(`Gagal menyimpan ID ke ${sheetName}:`, error);
-        return false;
-    }
-}
-
-async function getAllGroups() {
-    try {
-        const res = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Groups!A:A',
-        });
-        return res.data.values ? res.data.values.flat() : [];
-    } catch (error) {
-        console.error('Gagal mengambil data group:', error);
-        return [];
-    }
-}
-
-// === Fungsi Menambahkan Laporan Member ===
-async function addReport(username, message) {
-    await sheets.spreadsheets.values.append({
-        spreadsheetId: SPREADSHEET_ID,
-        range: 'Reports!A:B',
-        valueInputOption: 'RAW',
-        resource: { values: [[username, message]] },
-    });
-}
-// === Fungsi Cek User Terdaftar ===
-async function isRegistered(userId) {
-    try {
-        const res = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Members!A:A'
-        });
-        const userIds = res.data.values ? res.data.values.flat() : [];
-        return userIds.includes(userId.toString());
-    } catch (error) {
-        console.error('Gagal memeriksa pendaftaran:', error);
-        return false;
-    }
-}
-
-async function registerUser(ctx) {
-    try {
-        const { id, first_name, username } = ctx.from;
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Members!A:C',
-            valueInputOption: 'RAW',
-            resource: {
-                values: [[id, first_name, username || '-']]
-            }
-        });
-        ctx.reply('✅ Pendaftaran berhasil! Anda sekarang dapat menggunakan bot.');
-    } catch (error) {
-        console.error('Gagal mendaftarkan user:', error);
-        ctx.reply('❌ Terjadi kesalahan saat mendaftar. Coba lagi.');
-    }
-}
-
-// === Fungsi Member: Cek Status ===
-async function getStatus(userId) {
-    const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: SPREADSHEET_ID,
-        range: 'Members!A:C',
-    });
-    const data = res.data.values || [];
-    const member = data.find((row) => row[0] === userId.toString());
-
-    return member ? `Status Anda: ${member[2]}` : 'Anda belum terdaftar.';
-}
-// === Fungsi Tambah Channel ID ===
-async function addChannelId(channelId) {
-    try {
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Channels!A:A',
-            valueInputOption: 'RAW',
-            resource: { values: [[channelId]] }
-        });
-    } catch (error) {
-        console.error('Gagal menambahkan ID Channel:', error);
-    }
-}
-
-// === Fungsi Tambah Group ID ===
-async function addGroupId(groupId) {
-    try {
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Groups!A:A',
-            valueInputOption: 'RAW',
-            resource: { values: [[groupId]] }
-        });
-    } catch (error) {
-        console.error('Gagal menambahkan ID Group:', error);
-    }
-}
-
-// === Fungsi Admin: Memberikan Peringatan ===
-async function warnUser(userId, username) {
-    const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: SPREADSHEET_ID,
-        range: 'Warnings!A:C',
-    });
-    const data = res.data.values || [];
-    const index = data.findIndex((row) => row[0] === userId.toString());
-
-    if (index !== -1) {
-        const currentWarnings = parseInt(data[index][2]) + 1;
-        await sheets.spreadsheets.values.update({
-            spreadsheetId: SPREADSHEET_ID,
-            range: `Warnings!C${index + 1}`,
-            valueInputOption: 'RAW',
-            resource: { values: [[currentWarnings]] },
-        });
-        return `Pengguna ${username} telah diperingatkan. Total peringatan: ${currentWarnings}`;
-    } else {
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Warnings!A:C',
-            valueInputOption: 'RAW',
-            resource: { values: [[userId, username, 1]] },
-        });
-        return `Pengguna ${username} telah diberikan peringatan pertama.`;
-    }
-}
-// === Middleware Cek Pendaftaran ===
-bot.use(async (ctx, next) => {
-    // Mengecualikan middleware untuk proses registrasi
-    const exemptedCommands = ['register', '/start'];
-    const isRegisterAction = ctx.callbackQuery?.data === 'register';
-    const isExemptedCommand = exemptedCommands.includes(ctx.message?.text);
-
-    if (!isRegisterAction && !isExemptedCommand) {
-        const userId = ctx.from.id;
-        const registered = await isRegistered(userId);
-
-        if (!registered) {
-            return ctx.reply('⚠️ Anda belum terdaftar. Silakan daftar terlebih dahulu:', {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: '📋 Register', callback_data: 'register' }]
-                    ]
-                }
-            });
+    // Filter Toxic
+    if (ctx.message?.text) {
+        const messageText = ctx.message.text.toLowerCase();
+        if (bad.some((word) => messageText.includes(word))) {
+          ctx.deleteMessage();
+          return ctx.reply("Jangan gunakan kata kasar! 🚫");
         }
+      }
+    // Log Utama
+    if (ctx.message?.text) {
+        console.log(`User ${ctx.from.id || ctx.from.id} mengirim: ${ctx.message.text}`);
     }
-    return next(); // Lanjutkan jika sudah terdaftar atau sedang mendaftar
-});
-// === Menu Utama Berdasarkan Status ===
-bot.start(async (ctx) => {
-    const userId = ctx.from.id;
-    ctx.session.previousMenu = 'start';
-
-    if (await isAdmin(userId)) {
-        ctx.reply('👋 Selamat datang Admin! Pilih menu:', {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '➕ Add', callback_data: 'add' }],
-                    [{ text: '📢 Broadcast', callback_data: 'bc' }],
-                    [{ text: '⚠️ Warn', callback_data: 'warn' }],
-                    [{ text: '📖 Fitur', callback_data: 'fitur' }]
-                ]
-            }
-        });
-    } else if (await isMember(userId)) {
-        ctx.reply('👋 Selamat datang Member! Pilih menu:', {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '📖 Fitur', callback_data: 'fitur' }],
-                    [{ text: '🚩 Report', callback_data: 'report' }],
-                    [{ text: '👤 My Status', callback_data: 'status' }]
-                ]
-            }
-        });
-    } else {
-        ctx.reply('⚠️ Anda belum terdaftar. Silakan daftar terlebih dahulu:', {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '📋 Register', callback_data: 'register' }]
-                ]
-            }
-        });
-    }
-});
-
-
-bot.on('callback_query', async (ctx) => {
-    const action = ctx.callbackQuery.data;
-   
-    if (action === 'back' && ctx.session.previousMenu) {
-        ctx.session.waitingFor = null;
-        ctx.session.previousMenu = null;
-        return bot.start(ctx);
+    // Mengecek apakah pesan adalah callback (misalnya tombol inline)
+    else if (ctx.callbackQuery) {
+        console.log(`User ${ctx.from.id || ctx.from.id} menekan tombol dengan data: ${ctx.callbackQuery.data}`);
     }
     
-    ctx.session.previousMenu = action;
+    return next();
+  });
 
 
+bot.start(async (ctx) => {
+    
+    const userId = ctx.from.id; // User ID asli di private chat
+    const args = ctx.message.text.split(" "); // Tangkap parameter start
+    let originalUserId = userId; // Default ke user ID di private chat
+
+    if (args.length > 1 && args[1].startsWith("register_")) {
+        originalUserId = args[1].replace("register_", ""); // Ambil user ID dari grup
+    }
+
+    // Cek apakah user sudah terdaftar
+    const isAdmin = await func.isAdmin(originalUserId);
+    const isMember = await func.isMember(originalUserId);
+    const isPrivate = ctx.chat.type === 'private';
+
+
+   /* Mengecek Serial ID sudah terdaftar atau belum */
+   if (!isMember && !isAdmin) {
+    // Jika belum terdaftar, beri tombol untuk daftar
+    return ctx.reply('⚠️ Anda belum terdaftar. Silakan daftar dengan menekan tombol di bawah:', {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '📋 Daftar Sekarang', callback_data: `confirm_register_${originalUserId}` }]
+            ]
+        }
+    });
+}
+
+
+    // Jika sudah terdaftar, tampilkan menu
+    if (isAdmin) {
+        
+    const creditAdmin = await func.getCreditAdmin(ctx,userId)
+        await msgHandler.menuAdmin(ctx, "Admin", creditAdmin);
+    } else {
+        const credit = await func.getCredit(ctx, userId);
+        await msgHandler.menuMember(ctx, "Member",credit);
+    }
+});
+
+  bot.help((ctx) => {
+    ctx.reply("📌 Daftar Perintah yang Tersedia:\n\n" +
+              "🔹 /start - Mulai bot dan Menampilkan Menu\n" +
+              "🔹 /help - Menampilkan daftar perintah\n");
+  });
+  bot.command('resetcredit', async(ctx)=>{
+    const userId = ctx.from.id;
+    const args = ctx.message.text.split(' ').slice(1); // Mengambil argumen setelah perintah /addadmin
+    
+    if (!args) {
+        return ctx.reply("⚠️ Masukkan password untuk menambahkan admin!\n\nGunakan: `/addadmin {passwrpd}`")
+    }
+
+    const password = args[0];
+
+    if (password !== "1288") {
+        return ctx.reply("❌ Password salah! Anda tidak memiliki izin untuk menambahkan admin.");
+    }
+
+    const sukses = await func.resetCredit(userId);
+
+
+    if (sukses) {
+        ctx.reply("✅ Sukses! Anda telah mereset Credit.");
+    } else {
+        ctx.reply("❌ Gagal menambahkan Anda sebagai Admin.");
+    }
+      
+    
+  })
+  bot.command('addadmin', async (ctx) => {
+    const args = ctx.message.text.split(' ').slice(1); // Mengambil argumen setelah perintah /addadmin
+    
+    if (!args) {
+        return ctx.reply("⚠️ Masukkan password untuk menambahkan admin!\n\nGunakan: `/addadmin {passwrpd}`")
+    }
+
+    const password = args[0];
+
+    if (password !== "1288") {
+        return ctx.reply("❌ Password salah! Anda tidak memiliki izin untuk menambahkan admin.");
+    }
+
+    // Jika password benar, tambahkan admin
+    const success = await func.addAdmin(ctx, ctx.from.id, ctx.from.first_name, ctx.from.username);
+
+    if (success) {
+        ctx.reply("✅ Sukses! Anda sekarang telah menjadi Admin.");
+    } else {
+        ctx.reply("❌ Gagal menambahkan Anda sebagai Admin.");
+    }
+});
+
+  //Callback Data
+  bot.on('callback_query', async (ctx) => {
+    const action = ctx.callbackQuery.data;
+    const userId = ctx.from.id;
+
+    await ctx.answerCbQuery(); // Menghindari loading terus menerus
+
+    if (action.startsWith('dl_')) {
+        try {
+            const query = action.substring(3); // Menghapus "dl_" dari callback_data
+            const url = `https://api.lolhuman.xyz/api/kusonimesearch?apikey=risqyananto&query=${encodeURIComponent(query)}`;
+            const response = await axios.get(url);
+            const data = response.data.result.link_dl;
+            let price = 2000;
+            await func.useCredit(ctx, userId, price)
+            if (!data) return ctx.reply("❌ Link download tidak ditemukan!");
+
+            let downloadText = `📥 *Link Download untuk ${query}*:\n\n`;
+            Object.keys(data).forEach((quality) => {
+                downloadText += `🎞 *${quality}*:\n`;
+                Object.keys(data[quality]).forEach((server) => {
+                    downloadText += `🔗 [${server}](${data[quality][server]})\n`;
+                });
+                downloadText += `\n`;
+            });
+
+            ctx.reply(downloadText, { parse_mode: "Markdown", disable_web_page_preview: true });
+
+        } catch (error) {
+            console.error("❌ Error mengambil link download:", error);
+            ctx.reply("Terjadi kesalahan saat mengambil link download.");
+        }
+    }
+
+    if (action.startsWith('confirm_register_')) {
+        const originalUserId = action.replace('confirm_register_', ''); // Ambil user ID asli
+
+        // Cek apakah user sudah ada di database
+        const isMember = await func.isMember(originalUserId);
+        const isAdmin = await func.isAdmin(originalUserId);
+        let newMemberCredit = parseInt(config.credit)
+        if (isMember || isAdmin) {
+            return ctx.reply('✅ Anda sudah terdaftar!');
+        }
+
+        // Simpan data pendaftaran di database
+        await func.addMember(ctx, originalUserId, ctx.from.first_name, ctx.from.username, "Member", newMemberCredit);
+
+        return ctx.reply('✅ Pendaftaran berhasil! Selamat datang di bot.');
+    }
 
     switch (action) {
-        case 'add':
-            ctx.reply('Pilih jenis ID yang ingin ditambahkan:', {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: '➕ Tambahkan ID Channels', callback_data: 'add_channel' }],
-                        [{ text: '➕ Tambahkan ID Groups', callback_data: 'add_group' }],
-                        [{ text: '⬅️ Back', callback_data: 'back' }]
-                    ]
-                }
-            });
-            break;
-        case 'add_channel':
-            ctx.session.waitingFor = 'channel';
-            ctx.reply('📥 Masukkan ID Channel yang ingin ditambahkan:');
-            break;
-        case 'add_group':
-            ctx.session.waitingFor = 'group';
-            ctx.reply('📥 Masukkan ID Group yang ingin ditambahkan:');
-            break;
-        case 'bc':
-            if (await isAdmin(ctx.from.id)) {
-                ctx.session.waitingFor = 'broadcast';
-                ctx.reply('📢 Kirimkan pesan yang ingin dibroadcast:', {
-                    reply_markup: { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'back' }]] }
-                });
-                
-            } else {
-                ctx.reply('❌ Anda tidak memiliki akses.');
+    case 'back':
+    try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+    await msgHandler.goBack(ctx);
+    break;
+    case 'bc':
+        try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        ctx.session.waitingFor = 'bc';
+        ctx.reply("📣 Ingin membuat pengumuman apa admin ? ",  {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔔 Pengumuman', callback_data: 'umum'}],
+                    [{ text: '🔔 Update', callback_data: 'update'}],
+                    [{ text: '🔔 Event', callback_data: 'event'}],
+                    [{ text: '🔔 Giveaway', callback_data: 'gw'}],
+                    [{ text: '🔔 KHA', callback_data: 'kha'}],
+                    [{ text: '⚠️ Warning', callback_data: 'warningadmin'}],
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                ]
             }
-            break;
-        case 'warn':
-            ctx.session.waitingFor = 'warn';
-            ctx.reply('⚠️ Kirimkan ID user yang ingin diperingatkan:');
-            break;
-        case 'fitur':
-            ctx.reply('📖 List Command/Fitur dari Bot', {
+    })
+    break
+    case "umum":
+    try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        ctx.session.waitingFor = 'bc-umum';
+        ctx.reply("✍️ Masukan Pesan yang ingin di umumkan ",  {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                    ]
+            }
+        })
+    break
+    case "update":
+    try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        ctx.session.waitingFor = 'bc-update';
+        ctx.reply("✍️ Masukan Pesan Jenis atau Commands yang di update: ",  {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                    ]
+            }
+        })
+    break        
+    case "event":
+    try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        ctx.session.waitingFor = 'bc-event';
+        ctx.reply("✍️ Masukan pesan event yang ingin anda adakan: ",  {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                    ]
+            }
+        })
+    break        
+    case "gw":
+    try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        ctx.session.waitingFor = 'bc-giveaway';
+        ctx.reply("✍️ Masukan pesan giveaway anda:  ",  {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                    ]
+            }
+        })
+    break        
+    case "kha":
+    try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        ctx.session.waitingFor = 'bc-kha';
+        ctx.reply("✍️ Masukan pesan kata-kata hari ini anda: ",  {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                    ]
+            }
+        })
+    break        
+    case "warningadmin":
+    try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        ctx.session.waitingFor = 'bc-warning';
+        ctx.reply("✍️ Maskan pesan peringatan dari admin: ",  {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                    ]
+            }
+        })
+    break                
+    case 'report':
+        try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        ctx.session.waitingFor = 'report';
+        await msgHandler.getReport(ctx)
+    break
+    case 'fitur': 
+    try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+    await msgHandler.getFitur(ctx);
+    break;
+    case 'downloader':
+        try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        await msgHandler.getDownloader(ctx)
+    break
+    case 'information':
+        try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        await msgHandler.getInformation(ctx)
+    break
+    case 'animemanga':
+        try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        await msgHandler.getAnimanga(ctx)
+    break
+    case 'game':
+        try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        await msgHandler.getGame(ctx)
+    break
+
+    // Fitur Downloader
+    case 'yt':
+        try { await ctx.deleteMessage(); } catch (e) { console.log("Pesan sudah dihapus."); }
+        ctx.session.waitingFor = 'yt';
+        ctx.reply("📁 Masukan URL Youtube yang ingin anda download: ",  {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                ]
+            }
+    })
+    break
+    case 'tt':
+        try { await ctx.deleteMessage();} catch (e) {console.log("Done Delete")}
+        ctx.session.waitingFor = 'tt';
+        ctx.reply("📁 Masukan URL Tiktok yang ingin anda download: ",  {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                ]
+            }})
+    break
+    case 'fb': 
+    try { await ctx.deleteMessage();} catch (e) {console.log("Done Delete")}
+        ctx.session.waitingFor = 'fb';
+        ctx.reply("📁 Masukan URL Facebook yang ingin anda download: ", {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                ]
+            }})
+    break
+
+    // FItur Information
+    case 'cuaca':
+            try { await ctx.deleteMessage();} catch (e) {console.log("Done Delete")}
+            ctx.session.waitingFor = 'cuaca';
+            ctx.reply("Masukan nama kota yang ingin anda cari cuaca: (contoh: nganjuk, yogyakarta) ", {
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: '🍡 Random Waifu Image', callback_data: 'waifu' }],
-                        [{ text: 'ℹ️ Info Gempa Terbaru', callback_data: 'gempa'}]
+                        [{ text: '🔙 Back', callback_data: 'back'}]
                     ]
                 }
-            });
-            break;
-        case 'report':
-            ctx.reply('🚩 Kirim pesan laporan Anda.');
-            break;
-        case 'status':
-            ctx.reply(`👤 Status Anda:
-- Nama: ${ctx.from.first_name}
-- Username: @${ctx.from.username || '-'}`);
-            break;
-
-        case 'waifu':
-            let waifu = await func.scrapeData(apiku.waifu);
-            ctx.sendPhoto(waifu.url, { caption: "Sukses Mengirim Waifu Secara Acak." })
-        break
-        case 'gempa':
-            let gempa = await func.textGempa()
-            let imgempa = await func.imgGempa()
-            ctx.sendPhoto(imgempa, { caption : gempa})
-        break
-        default:
-            ctx.reply('❌ Perintah tidak dikenal.');
+            })
+    break
+    case 'gempanew':
+        try { await ctx.deleteMessage();} catch (e) {console.log("Done Delete")}
+        let price = 100;
+        await func.useCredit(ctx, userId, price)
+        let gempa = await func.textGempa()
+        let imgempa = await func.imgGempa()
+        ctx.sendPhoto(imgempa, { caption : gempa})
+    break
+    case 'wikped':
+        try { await ctx.deleteMessage();} catch (e) {console.log("Done Delete")}
+        ctx.session.waitingFor = 'wikped';
+        ctx.reply("Tulis Pertanyaan atau istilah yang ingin anda cari di wikipedia: (contoh: kota nganjuk) ", {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                ]
+            }
+        })
+    break
+    case 'anime':
+        try { await ctx.deleteMessage();} catch (e) {console.log("Done Delete")}
+        ctx.reply("Anda Ingin Men-Download atau Hanya mencari Info tentang anime ? (pilih salah satu menu di bawah ini) ", {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '1️⃣ Download Anime', callback_data: 'donlodnimex'}],
+                    [{ text: '2️⃣ Anime Info', callback_data: 'animinpo'}],
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                ]
+            }
+        })
+    break
+    case 'donlodnimex':
+        try { await ctx.deleteMessage();} catch (e) {console.log("Done Delete")}
+        ctx.session.waitingFor = 'donlodnimex';
+        ctx.reply("Tulis Judul Anime yang ingin klean download: (contoh: naruto)", {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                ]
+            }
+        })
+    break
+    case 'animinpo':
+        try { await ctx.deleteMessage();} catch (e) {console.log("Done Delete")}
+        ctx.session.waitingFor = 'animeinfo';
+        ctx.reply("Tulis judul Anime yang ingin klean cari info nya: (contoh: naruto)", {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🔙 Back', callback_data: 'back'}]
+                ]
+            }
+        })
+    break
+    case 'test':
+        try { await ctx.deleteMessage();} catch (e) {console.log("Done Delete")}
+        ctx.session.waitingFor = 'tes';
+        ctx.reply("📁 Masukan URL Facebook yang ingin anda download:")
+    break
     }
-
-    ctx.answerCbQuery();
-});
-
-
-  // === Handler Teks ===
+  });
+ 
   bot.on('text', async (ctx) => {
     const text = ctx.message.text;
-    if (ctx.session.waitingFor === 'channel') {
-        await addChannelId(text);
-        ctx.reply(`✅ ID Channel ${text} berhasil ditambahkan.`);
-    } else if (ctx.session.waitingFor === 'group') {
-        await addGroupId(text);
-        ctx.reply(`✅ ID Group ${text} berhasil ditambahkan.`);
-    } else if (ctx.session.waitingFor === 'broadcast') {
-        const members = await getAllMembers();
-        const channels = await getAllChannels();
-        const groups = await getAllGroups();
-        for (const userId of [...members, ...channels, ...groups]) {
-            try {
-                await bot.telegram.sendMessage(userId, `📢 Pesan broadcast: \r\n**${text}**`);
-            } catch (error) {
-                console.error(`Gagal mengirim ke ${userId}:`, error);
+    const userId = ctx.from.id;
+    let price = ''
+    if (ctx.session.waitingFor === 'report') {
+        await func.sendMessageToAdmins(bot, text);
+        ctx.reply(`✅ Laporan anda telah dikirim ke ADMIN!!.`);
+    }
+    if (ctx.session.waitingFor === 'tes') {
+        let price = 1000
+        await func.useCredit(ctx, userId, price)
+        ctx.reply("200")
+    }
+    
+    if (ctx.session.waitingFor === 'bc-umum') {
+        await func.sendBCUmum(bot, text)
+        ctx.reply('Sukses Bang')
+    }
+    /*
+    if (ctx.session.waitingFor === 'bc-update') {
+        let getIdAll = await func.getAllUser()
+        await msgHandler.bcUpdate(ctx,getIdAll,text)
+        ctx.reply("✅ Sukses Membuat Pengumuman")
+    }
+    if (ctx.session.waitingFor === 'bc-event') {
+        let getIdAll = await func.getAllUser()
+        await msgHandler.bcEvent(ctx,getIdAll,text)
+        ctx.reply("✅ Sukses Membuat Pengumuman")
+    }
+    if (ctx.session.waitingFor === 'bc-giveaway') {
+        let getIdAll = await func.getAllUser()
+        await msgHandler.bcGiveaway(ctx,getIdAll,text)
+        ctx.reply("✅ Sukses Membuat Pengumuman")
+    }
+    if (ctx.session.waitingFor === 'bc-kha') {
+        let getIdAll = await func.getAllUser()
+        await msgHandler.bcKha(ctx,getIdAll,text)
+        ctx.reply("✅ Sukses Membuat Pengumuman")
+    }
+    if (ctx.session.waitingFor === 'bc-warning') {
+        let getIdAll = await func.getAllUser()
+        await msgHandler.bcWarning(ctx,getIdAll,text)
+        ctx.reply("✅ Sukses Membuat Pengumuman")
+    }
+        */
+    if (ctx.session.waitingFor === 'yt') {
+        let price = 1000
+        let type = apiList.yt;
+        await func.useCredit(ctx, userId, price)
+        const data = await func.scrapeData(type,text)
+        ctx.sendVideo(data.result.link, { caption: `Judul: ${data.result.title}`})
+        ctx.reply("✅ Sukses Download Konten");
+
+    }
+    if (ctx.session.waitingFor === 'fb') {
+        let price = 1000
+        let type = apiList.fb;
+        await func.useCredit(ctx, userId, price)
+        const data = await func.scrapeData(type,text)
+        ctx.sendVideo(data.result[0])
+    }
+    if (ctx.session.waitingFor === 'tt') {
+        let price = 1000
+        let type = apiList.tt;
+        await func.useCredit(ctx, userId, price)
+        const data = await func.scrapeData(type,text)
+        let dataSource = data.result;
+        let captionTT = `➡️ Title: ${dataSource.title}\n➡️ Keyword: ${dataSource.keyword}\n➡️ Deskripsi: ${dataSource.description}\n➡️ Duration: ${dataSource.duration}\n➡️ Author: ${dataSource.author.nickname}(${dataSource.author.username}`
+        ctx.sendVideo(dataSource.link, { caption: captionTT})
+    }
+    if (ctx.session.waitingFor === 'cuaca'){
+        let textku = text + '?apikey=risqyananto'
+        let price = 1000
+        let type = apiList.cuaca
+        await func.useCredit(ctx, userId, price)
+        const data = await func.scrapeData(type,textku)
+        let dataSource = data.result
+        let imgUrl = 'https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEjIGl6owxajsiL8G5qxbbzJFy1phpPolAhgx9GH_HgOv9P6VQqy_vNPFW7So-JoS52lAReXChsy5ykcfeQF5uSaB4CahjNZsQx8O2ygzYqoQ_UvjBdbjz5fBmowIzVzfxodlMiwfM3oTPzotJ8ogzAiCX0MXdto_145LLH6vVfCHDvTU7563KfY5QOlG44/s1600/inert.jpg';
+        let captionCuaca = `📍 Tempat: ${dataSource.tempat}\n🌐 Latitude: ${dataSource.latitude} / Longitude: ${dataSource.longitude}\n☁️ Cuaca: ${dataSource.cuaca}\n💨 Kecepatan Angin: ${dataSource.angin}\n💨 Keterangan: ${dataSource.description}\n🌦️ Kelembapan: ${dataSource.kelembapan}\n🌡️ Suhu: ${dataSource.suhu}\n🌫️ Udara: ${dataSource.udara}\n🌊 Permukaan Laut: ${dataSource.permukaan_laut}`
+        ctx.sendPhoto(imgUrl, { caption: captionCuaca})
+
+    }
+    if (ctx.session.waitingFor === 'wikped'){
+        let price = 1000
+        let type = apiList.wikped
+        await func.useCredit(ctx, userId, price)
+        const data = await func.scrapeData(type,text)
+        let dataSource = data.result
+        let imgUrl = 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/80/Wikipedia-logo-v2.svg/800px-Wikipedia-logo-v2.svg.png';
+        let captionCuaca = `🌐 Wikipedia Menjelaskan: ${dataSource} `
+        ctx.sendPhoto(imgUrl, { caption: captionCuaca})
+
+    }
+    if (ctx.session.waitingFor === 'donlodnimex'){
+        let price = 1000
+        let type = apiList.wikped
+        await func.useCredit(ctx, userId, price)
+        const data = await func.scrapeData(type,text)
+        let dataSource = data.result
+        let imgUrl = 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/80/Wikipedia-logo-v2.svg/800px-Wikipedia-logo-v2.svg.png';
+        let captionCuaca = `🌐 Wikipedia Menjelaskan: ${dataSource} `
+        ctx.sendPhoto(imgUrl, { caption: captionCuaca})
+
+    }
+    if (ctx.session.waitingFor === 'animeinfo'){
+        let price = 1000
+        let type = apiList.animeinfo
+        await func.useCredit(ctx, userId, price)
+        const data = await func.scrapeData(type,text)
+        let dataSource = data.result
+        let captionNimex = `⌞Anime Inpo⌝\n✸ Title: ${dataSource.title.romaji}(${dataSource.title.native})\n✸ Type: ${dataSource.format}\n✸ Episode: ${dataSource.episodes}\n✸ Duration: ${dataSource.duration}\n✸ Status: ${dataSource.status}\n✸ Season: ${dataSource.season}(${dataSource.seasonYear})\n✸ Source: ${dataSource.source}\n✸ Aired: ${dataSource.startDate.year} - ${dataSource.endDate.year}\n✸ Description: ${dataSource.description}`
+        ctx.sendPhoto(dataSource.coverImage.large, {
+            caption: captionNimex,
+            parse_mode: "Markdown",
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '📥 Download', callback_data: `dl_${text}` }]
+                ]
+            }
+        });
+
+    }
+  });
+
+  bot.on('inline_query', async (ctx) => {
+    const results = [
+        {
+            type: 'article',
+            id: '1',
+            title: 'Mulai Bot',
+            description: 'Klik untuk memulai bot dalam private chat',
+            input_message_content: {
+                message_text: 'Klik tombol di bawah untuk mulai menggunakan bot ini.'
+            },
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🚀 Start Bot', url: `https://t.me/${ctx.botInfo.username}?start=inline` }]
+                ]
             }
         }
-        ctx.reply('✅ Broadcast berhasil dikirim!');
-    } else if (ctx.session.waitingFor === 'warn') {
-        ctx.reply(`⚠️ Peringatan dikirimkan ke ID: ${text}`);
-    }
+    ];
 
-    ctx.session.waitingFor = null;
+    ctx.answerInlineQuery(results);
 });
 
-
-// === Menjalankan Bot ===
 bot.launch();
-console.log('Bot sedang berjalan...');
+console.log("Bot telah berjalan...");
